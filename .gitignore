@@ -1,0 +1,25 @@
+.DS_Store
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local env and secrets
+.env
+*.env
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor/OS
+.idea/
+.vscode/
+
+# AutoAudit runtime artifacts
+AutoAudit/data/logs/
+AutoAudit/data/results/
+AutoAudit/data/chroma_db/

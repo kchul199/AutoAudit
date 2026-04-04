@@ -1,0 +1,36 @@
+# ── Phase 1: 데이터 파이프라인 (CP1~CP3) ──────────────────────────
+# 벡터 DB
+chromadb>=0.4.22
+
+# 희소 검색
+rank_bm25>=0.2.2
+
+# LLM 클라이언트 (CP3 HyDE / Multi-Query 생성)
+anthropic>=0.25.0
+openai>=1.30.0
+google-generativeai>=0.5.0
+
+# Cross-Encoder 리랭킹
+sentence-transformers>=2.7.0
+
+# API 재시도
+tenacity>=8.3.0
+
+# 문서 파싱
+pypdf>=4.2.0
+python-docx>=1.1.2
+beautifulsoup4>=4.12.3
+requests>=2.32.0
+
+# ── Phase 2: Multi-LLM 평가 엔진 (CP4) ──────────────────────────
+# (이미 위에 포함)
+
+# ── Phase 3: 집계 & 보고서 (CP5~CP6) ─────────────────────────────
+atlassian-python-api>=3.41.0
+matplotlib>=3.9.0
+numpy>=1.26.0
+
+# ── Phase 4: UI 백엔드 ────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
