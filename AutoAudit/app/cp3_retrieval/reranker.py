@@ -53,6 +53,7 @@ class ContextResult:
             "original_query":     self.original_query,
             "hypothetical_answer": self.hypothetical_answer,
             "query_variants":     self.query_variants,
+            "context_text":       self.context_text,
             "top_chunks": [
                 {**c.to_dict(), "parent_text": pt[:200] + "..." if pt and len(pt) > 200 else pt}
                 for c, pt in zip(self.ranked_chunks, self.parent_texts)
@@ -254,8 +255,12 @@ class RetrievalPipeline:
 
         # ── 단계 3: Multi-Query 확장 병합 ────────────────────────
         if self.use_multi_query and candidates:
-            variants_result = self.multi_query_expander.search(query, top_k=top_k_first)
-            query_variants = self.multi_query_expander.generate_variants(query)[1:]  # 원본 제외
+            generated_variants = self.multi_query_expander.generate_variants(query)
+            query_variants = generated_variants[1:]  # 원본 제외
+            variants_result = self.multi_query_expander.search_with_variants(
+                generated_variants,
+                top_k=top_k_first,
+            )
 
             # 1단계 결과 + Multi-Query 결과 RRF 병합
             candidates = self._merge_results(candidates, variants_result, top_k_first)

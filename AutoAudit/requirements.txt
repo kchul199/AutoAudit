@@ -21,6 +21,7 @@ pypdf>=4.2.0
 python-docx>=1.1.2
 beautifulsoup4>=4.12.3
 requests>=2.32.0
+python-dotenv>=1.0.1
 
 # ── Phase 2: Multi-LLM 평가 엔진 (CP4) ──────────────────────────
 # (이미 위에 포함)

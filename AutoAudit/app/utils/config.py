@@ -39,6 +39,7 @@ def load_config(env_file: str = ".env") -> dict:
         "cross_encoder_model": os.getenv("CROSS_ENCODER_MODEL",
                                          "cross-encoder/ms-marco-MiniLM-L-6-v2"),
         "embedding_model":     os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"),
+        "local_embedding_model": os.getenv("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
 
         # Thresholds
         "uncertainty_threshold": float(os.getenv("UNCERTAINTY_THRESHOLD", "1.5")),

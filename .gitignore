@@ -23,3 +23,8 @@ htmlcov/
 AutoAudit/data/logs/
 AutoAudit/data/results/
 AutoAudit/data/chroma_db/
+data/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
