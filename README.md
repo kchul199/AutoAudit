@@ -38,8 +38,15 @@ RAG(Retrieval-Augmented Generation) 기반 SaaS 콜봇을 운영하면서 겪는
 - **희소 검색**: BM25 (`rank_bm25`)
 - **리랭킹**: Cross-Encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
 - **평가 LLM**: Claude Opus 4 · GPT-4o · Gemini 1.5 Pro (비동기 병렬 호출)
-- **보고서**: Confluence REST API (`atlassian-python-api`)
-- **UI**: React 18 + Tailwind CSS + FastAPI
+- **보고서**: 로컬 HTML + Confluence REST API (`atlassian-python-api`)
+- **운영 UI**: React 18 + Vite 프런트엔드 (`frontend/`)
+- **레거시 시안**: 단일 JSX 목업 (`callbot_quality_ui.jsx`)
+
+## 📍 현재 저장소 상태
+
+- **실제 구현 범위**: `AutoAudit/` 아래 CP1~CP6 CLI 파이프라인 + FastAPI 서버 + `frontend/` Vite 앱
+- **보고서 출력**: 기본은 로컬 HTML 보고서 저장, Confluence 연동 정보가 있으면 베스트에포트 발행
+- **UI 파일 상태**: `callbot_quality_ui.jsx`는 초기 시안이고, 실제 실행 가능한 화면은 `frontend/` 아래에 있습니다.
 
 ---
 
@@ -50,7 +57,7 @@ RAG(Retrieval-Augmented Generation) 기반 SaaS 콜봇을 운영하면서 겪는
 | `RAG콜봇_품질자동화_기획안.docx` | 프로젝트 기획서 (8개 섹션, CP1~CP6 상세 기획) |
 | `RAG콜봇_품질자동화_기획발표.pptx` | 부서장 보고용 PPT (11슬라이드) |
 | `RAG콜봇_파이프라인_구현설계서.docx` | 구현 설계서 (7개 챕터, CP별 모듈 + UI 화면 설계) |
-| `callbot_quality_ui.jsx` | 관리 UI React 앱 (10개 화면 SPA) |
+| `callbot_quality_ui.jsx` | 관리 UI 단일 파일 목업 (10개 화면 시안) |
 | `README.md` | 본 문서 |
 
 ---
@@ -83,46 +90,77 @@ RAG(Retrieval-Augmented Generation) 기반 SaaS 콜봇을 운영하면서 겪는
 
 ### 1. 환경 설정
 
+아래 명령은 저장소 루트 기준입니다. 같은 인터프리터로 설치와 실행을 맞추기 위해 `python3 -m pip` 사용을 권장합니다.
+
 ```bash
 # 의존성 설치
-pip install chromadb rank_bm25 anthropic openai google-generativeai \
-            atlassian-python-api sentence-transformers tenacity fastapi uvicorn
+python3 -m pip install -r AutoAudit/requirements.txt
 
 # API 키 설정 (.env 파일)
-cp .env.example .env
-# .env 파일에 API 키 입력 (UI의 'API 키 설정' 화면 또는 직접 편집)
+cp AutoAudit/.env.example .env
+# .env 파일에 API 키 입력
 ```
 
 ### 2. 지식 베이스 구축
 
 ```bash
 # 특정 가입자 문서 인덱싱
-python run_pipeline.py --subscriber 한국통신 --reindex
+python3 AutoAudit/run_pipeline.py --subscriber 한국통신 --reindex
 
 # 전체 가입자 인덱싱
-python run_pipeline.py --all --reindex
+python3 AutoAudit/run_pipeline.py --all --reindex
+```
+
+입력 파일은 아래 경로에 준비해야 합니다.
+
+```text
+data/logs/<가입자명>/   # .txt .json .csv .log
+data/docs/<가입자명>/   # .pdf .txt .html .htm .docx .doc .md
 ```
 
 ### 3. 품질 평가 실행
 
 ```bash
 # 특정 가입자 평가 (CP1~CP6 전체)
-python run_pipeline.py --subscriber 한국통신
+python3 AutoAudit/run_pipeline.py --subscriber 한국통신
 
 # 전체 가입자 평가
-python run_pipeline.py --all
+python3 AutoAudit/run_pipeline.py --all
 ```
 
-### 4. UI 실행
+### 4. 샘플 데이터 smoke test
 
 ```bash
-# 백엔드 서버 시작
-uvicorn app.server:app --host 0.0.0.0 --port 8000 --reload
-
-# 프론트엔드 (별도 터미널)
-npm install && npm start
-# → http://localhost:3000
+# 입력 파일 없이 CP1만 빠르게 검증
+python3 AutoAudit/run_pipeline.py --subscriber 데모사 --until cp1 --allow-sample-data
 ```
+
+### 5. API 서버 실행
+
+```bash
+python3 -m uvicorn app.server:app --app-dir AutoAudit --reload
+```
+
+기본 주소는 `http://127.0.0.1:8000`이며, 정적 결과물은 `/artifacts/...`, API는 `/api/...`에서 제공합니다.
+
+### 6. 프런트엔드 실행
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+필요하면 `frontend/.env`에 아래 값을 둘 수 있습니다.
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+### 7. UI 참고
+
+- `frontend/`는 실제 API 호출이 연결된 운영용 스캐폴드입니다.
+- `callbot_quality_ui.jsx`는 디자인/기획 참고용 목업 파일로 유지합니다.
 
 ---
 
@@ -138,6 +176,8 @@ GOOGLE_API_KEY=AIzaSy...
 CLAUDE_MODEL=claude-opus-4-6
 OPENAI_MODEL=gpt-4o
 GEMINI_MODEL=gemini-1.5-pro
+EMBEDDING_MODEL=text-embedding-3-large
+LOCAL_EMBEDDING_MODEL=all-MiniLM-L6-v2
 
 # Confluence
 CONFLUENCE_URL=https://your-domain.atlassian.net
@@ -147,7 +187,10 @@ CONFLUENCE_SPACE_KEY=CALLBOT
 CONFLUENCE_PARENT_PAGE_ID=123456789
 
 # Pipeline
-CHROMA_PERSIST_DIR=./chroma_db
+CHROMA_PERSIST_DIR=./data/chroma_db
+LOG_DIR=./data/logs
+DOC_DIR=./data/docs
+RESULTS_DIR=./data/results
 LOG_LEVEL=INFO
 UNCERTAINTY_THRESHOLD=1.5
 ```
@@ -172,7 +215,7 @@ UNCERTAINTY_THRESHOLD=1.5
 | Phase 1 | 1~2주차 | 데이터 파이프라인 (CP1~CP3) |
 | Phase 2 | 3~4주차 | Multi-LLM 평가 엔진 (CP4) |
 | Phase 3 | 5주차 | 집계 & 보고서 (CP5~CP6) |
-| Phase 4 | 6주차 | 파일럿 & 최종 검증 |
+| Phase 4 | 6주차 | FastAPI + 운영 UI + 파일럿 검증 |
 
 ---
 

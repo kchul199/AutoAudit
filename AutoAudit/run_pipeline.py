@@ -15,17 +15,20 @@ AutoAudit — RAG 콜봇 품질 자동 검증 파이프라인 실행 진입점
   # 특정 CP까지만 실행
   python run_pipeline.py --subscriber 한국통신 --until cp3
 
-Phase 1 (CP1~CP3) 구현 완료
-Phase 2 (CP4),  Phase 3 (CP5~CP6) 구현 예정
+  # 입력 파일 없이 CP1 smoke test
+  python run_pipeline.py --subscriber 데모사 --until cp1 --allow-sample-data
+
+CP1~CP6 전체 로컬 파이프라인 구현
+FastAPI 서버 및 Vite 프런트엔드와 연동 가능
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-import os
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # ── 경로 설정 ─────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -39,9 +42,38 @@ logger = get_logger("run_pipeline", log_dir="./data/logs")
 # ── 파이프라인 단계 정의 ──────────────────────────────────────────
 
 CHECKPOINT_ORDER = ["cp1", "cp2", "cp3", "cp4", "cp5", "cp6"]
+LOG_EXTENSIONS = {".txt", ".json", ".csv", ".log"}
+DOC_EXTENSIONS = {".pdf", ".txt", ".html", ".htm", ".docx", ".doc", ".md"}
 
 
-def run_cp1(subscriber: str, config: dict, log_dir: str) -> list:
+def _has_supported_files(dir_path: Path, exts: set[str]) -> bool:
+    """지원 확장자의 파일이 하나라도 있으면 True."""
+    return dir_path.exists() and any(
+        path.is_file() and path.suffix.lower() in exts
+        for path in dir_path.rglob("*")
+    )
+
+
+def _finalize_results(
+    subscriber: str,
+    results: dict,
+    start_time: datetime,
+    status: str = "completed",
+) -> dict:
+    """파이프라인 실행 상태와 소요 시간을 일관되게 마감."""
+    results["status"] = status
+    elapsed = (datetime.now() - start_time).total_seconds()
+    results["elapsed_sec"] = round(elapsed, 1)
+    logger.info(f"[Pipeline] {subscriber} 완료: {elapsed:.1f}초")
+    return results
+
+
+def run_cp1(
+    subscriber: str,
+    config: dict,
+    log_dir: str,
+    allow_sample_data: bool = False,
+) -> list:
     """CP1 — 데이터 전처리: 로그 파싱 + 문서 로드"""
     from app.cp1_preprocessing.log_parser import LogParser
     from app.cp1_preprocessing.doc_loader import DocLoader
@@ -50,16 +82,21 @@ def run_cp1(subscriber: str, config: dict, log_dir: str) -> list:
 
     # 로그 파싱
     log_path = Path(config["log_dir"]) / subscriber
-    log_path.mkdir(parents=True, exist_ok=True)
 
     parser = LogParser(subscriber=subscriber)
     conversations = []
 
-    if log_path.exists() and any(log_path.iterdir()):
+    if _has_supported_files(log_path, LOG_EXTENSIONS):
         conversations = parser.parse_directory(str(log_path))
-    else:
+    elif allow_sample_data:
         logger.warning(f"[CP1] 로그 디렉토리 비어있음: {log_path} — 샘플 데이터 사용")
         conversations = _create_sample_conversations(subscriber, parser)
+    else:
+        raise FileNotFoundError(
+            f"로그 파일이 없습니다: {log_path} "
+            f"(지원 형식: {', '.join(sorted(LOG_EXTENSIONS))}). "
+            "--allow-sample-data 옵션으로 샘플 데이터 실행이 가능합니다."
+        )
 
     # 파싱 결과 저장
     parsed_path = Path(config["results_dir"]) / subscriber / "cp1_parsed_logs.json"
@@ -67,15 +104,20 @@ def run_cp1(subscriber: str, config: dict, log_dir: str) -> list:
 
     # 문서 로드
     doc_path = Path(config["doc_dir"]) / subscriber
-    doc_path.mkdir(parents=True, exist_ok=True)
 
     loader = DocLoader(subscriber=subscriber)
     docs = []
-    if doc_path.exists() and any(doc_path.iterdir()):
+    if _has_supported_files(doc_path, DOC_EXTENSIONS):
         docs = loader.load_directory(str(doc_path))
-    else:
+    elif allow_sample_data:
         logger.warning(f"[CP1] 문서 디렉토리 비어있음: {doc_path} — 샘플 문서 사용")
         docs = _create_sample_docs(subscriber, loader)
+    else:
+        raise FileNotFoundError(
+            f"문서 파일이 없습니다: {doc_path} "
+            f"(지원 형식: {', '.join(sorted(DOC_EXTENSIONS))}). "
+            "--allow-sample-data 옵션으로 샘플 데이터 실행이 가능합니다."
+        )
 
     # 문서 로드 결과 저장
     docs_path = Path(config["results_dir"]) / subscriber / "cp1_docs.json"
@@ -122,6 +164,7 @@ def run_cp2(subscriber: str, docs: list, config: dict, force_reindex: bool = Fal
         persist_dir=config["chroma_persist_dir"],
         openai_api_key=config["openai_api_key"],
         embedding_model=config["embedding_model"],
+        local_embedding_model=config["local_embedding_model"],
     )
     embedder.build_index(chunks, force_rebuild=force_reindex)
 
@@ -175,6 +218,7 @@ def run_cp3(subscriber: str, conversations: list, embedder: object, config: dict
 
             retrieval_results.append({
                 "conv_id":    conv.id,
+                "source_file": conv.source_file,
                 "turn_index": i,
                 "bot_answer": turn.text,
                 "user_query": user_q.text,
@@ -190,6 +234,86 @@ def run_cp3(subscriber: str, conversations: list, embedder: object, config: dict
     return retrieval_results
 
 
+def run_cp4(subscriber: str, retrieval_results: list, config: dict) -> list:
+    """CP4 — Multi-LLM 합의 평가"""
+    from app.cp4_evaluator import ClaudeJudge, ConsensusEvaluator, GPTJudge, GeminiJudge
+
+    logger.info(f"━━━ CP4 시작: {subscriber} ━━━")
+
+    judges = [
+        ClaudeJudge(
+            model=config["claude_model"],
+            api_key=config["anthropic_api_key"],
+        ),
+        GPTJudge(
+            model=config["openai_model"],
+            api_key=config["openai_api_key"],
+        ),
+        GeminiJudge(
+            model=config["gemini_model"],
+            api_key=config["google_api_key"],
+        ),
+    ]
+    evaluator = ConsensusEvaluator(
+        judges=judges,
+        uncertainty_threshold=config["uncertainty_threshold"],
+    )
+
+    async def _evaluate_all() -> list:
+        results = []
+        for item in retrieval_results:
+            context_dict = item.get("context", {})
+            turn_data = {
+                "user_query": item["user_query"],
+                "bot_answer": item["bot_answer"],
+                "context_text": context_dict.get("context_text", ""),
+                "retrieval": context_dict,
+            }
+            consensus = await evaluator.evaluate(turn_data)
+            results.append(
+                {
+                    **item,
+                    "consensus": consensus.to_dict(),
+                }
+            )
+        return results
+
+    cp4_results = asyncio.run(_evaluate_all())
+    cp4_path = Path(config["results_dir"]) / subscriber / "cp4_evaluation_results.json"
+    with open(cp4_path, "w", encoding="utf-8") as f:
+        json.dump(cp4_results, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"[CP4] 완료: {len(cp4_results)}개 턴 평가")
+    return cp4_results
+
+
+def run_cp5(subscriber: str, cp4_results: list, config: dict) -> dict:
+    """CP5 — 결과 집계 & 분석"""
+    from app.cp5_aggregator import StatsAggregator
+
+    logger.info(f"━━━ CP5 시작: {subscriber} ━━━")
+    aggregator = StatsAggregator(results_dir=config["results_dir"])
+    report = aggregator.aggregate(subscriber, cp4_results)
+    logger.info(f"[CP5] 완료: 대화 {report['summary']['total_conversations']}개 집계")
+    return report
+
+
+def run_cp6(subscriber: str, report: dict, config: dict) -> dict:
+    """CP6 — 보고서 발행"""
+    from app.cp6_reporter import ConfluenceReporter
+
+    logger.info(f"━━━ CP6 시작: {subscriber} ━━━")
+    reporter = ConfluenceReporter(config=config, results_dir=config["results_dir"])
+    output_dir = Path(config["results_dir"]) / subscriber
+    chart_paths = [
+        str(output_dir / chart_name)
+        for chart_name in report.get("chart_paths", [])
+    ]
+    publish_result = reporter.publish(subscriber, report, chart_paths=chart_paths)
+    logger.info(f"[CP6] 완료: {publish_result['status']}")
+    return publish_result
+
+
 # ── 메인 실행기 ───────────────────────────────────────────────────
 
 def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> dict:
@@ -201,21 +325,30 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
     try:
         # CP1
         if CHECKPOINT_ORDER.index("cp1") <= CHECKPOINT_ORDER.index(until):
-            conversations, docs = run_cp1(subscriber, config, config["log_dir"])
+            conversations, docs = run_cp1(
+                subscriber,
+                config,
+                config["log_dir"],
+                allow_sample_data=args.allow_sample_data,
+            )
             results["checkpoints"]["cp1"] = {
                 "status": "done",
                 "conversations": len(conversations),
                 "docs": len(docs),
             }
         else:
-            return results
+            return _finalize_results(subscriber, results, start_time)
+        if until == "cp1":
+            return _finalize_results(subscriber, results, start_time)
 
         # CP2
         if CHECKPOINT_ORDER.index("cp2") <= CHECKPOINT_ORDER.index(until):
             embedder = run_cp2(subscriber, docs, config, force_reindex=args.reindex)
             results["checkpoints"]["cp2"] = {"status": "done", **embedder.index_stats()}
         else:
-            return results
+            return _finalize_results(subscriber, results, start_time)
+        if until == "cp2":
+            return _finalize_results(subscriber, results, start_time)
 
         # CP3
         if CHECKPOINT_ORDER.index("cp3") <= CHECKPOINT_ORDER.index(until):
@@ -225,24 +358,50 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
                 "retrieval_count": len(retrieval_results),
             }
         else:
-            return results
+            return _finalize_results(subscriber, results, start_time)
+        if until == "cp3":
+            return _finalize_results(subscriber, results, start_time)
 
         # CP4~CP6 (Phase 2~3에서 구현)
-        for cp in ["cp4", "cp5", "cp6"]:
-            if CHECKPOINT_ORDER.index(cp) <= CHECKPOINT_ORDER.index(until):
-                results["checkpoints"][cp] = {"status": "pending — Phase 2/3에서 구현 예정"}
+        if CHECKPOINT_ORDER.index("cp4") <= CHECKPOINT_ORDER.index(until):
+            cp4_results = run_cp4(subscriber, retrieval_results, config)
+            results["checkpoints"]["cp4"] = {
+                "status": "done",
+                "evaluated_turns": len(cp4_results),
+            }
+        else:
+            return _finalize_results(subscriber, results, start_time)
+        if until == "cp4":
+            return _finalize_results(subscriber, results, start_time)
 
-        results["status"] = "completed"
+        if CHECKPOINT_ORDER.index("cp5") <= CHECKPOINT_ORDER.index(until):
+            report = run_cp5(subscriber, cp4_results, config)
+            results["checkpoints"]["cp5"] = {
+                "status": "done",
+                "conversations": report["summary"]["total_conversations"],
+                "avg_overall": report["summary"]["avg_overall"],
+            }
+        else:
+            return _finalize_results(subscriber, results, start_time)
+        if until == "cp5":
+            return _finalize_results(subscriber, results, start_time)
+
+        if CHECKPOINT_ORDER.index("cp6") <= CHECKPOINT_ORDER.index(until):
+            publish_result = run_cp6(subscriber, report, config)
+            results["checkpoints"]["cp6"] = {
+                "status": publish_result["status"],
+                "local_report_path": publish_result["local_report_path"],
+                "confluence_page_id": publish_result.get("confluence_page_id"),
+            }
+        else:
+            return _finalize_results(subscriber, results, start_time)
 
     except Exception as e:
         logger.error(f"[Pipeline] {subscriber} 오류: {e}", exc_info=True)
         results["status"] = "error"
         results["error"] = str(e)
-
-    elapsed = (datetime.now() - start_time).total_seconds()
-    results["elapsed_sec"] = round(elapsed, 1)
-    logger.info(f"[Pipeline] {subscriber} 완료: {elapsed:.1f}초")
-    return results
+        return _finalize_results(subscriber, results, start_time, status="error")
+    return _finalize_results(subscriber, results, start_time)
 
 
 def main():
@@ -262,6 +421,11 @@ def main():
     parser.add_argument("--until",      "-u", type=str, default="cp6",
                         choices=CHECKPOINT_ORDER, help="마지막 실행 CP (기본: cp6)")
     parser.add_argument("--env",        type=str, default=".env", help=".env 파일 경로")
+    parser.add_argument(
+        "--allow-sample-data",
+        action="store_true",
+        help="입력 파일이 없을 때만 샘플 로그/문서를 사용",
+    )
     args = parser.parse_args()
 
     if not args.subscriber and not args.all:
@@ -275,12 +439,21 @@ def main():
     if args.all:
         # 가입자 디렉토리에서 자동 감지
         doc_root = Path(config["doc_dir"])
-        doc_root.mkdir(parents=True, exist_ok=True)
-        subscribers = [d.name for d in doc_root.iterdir() if d.is_dir()]
+        subscribers = []
+        if doc_root.exists():
+            subscribers = [
+                d.name for d in doc_root.iterdir()
+                if d.is_dir() and _has_supported_files(d, DOC_EXTENSIONS)
+            ]
         if not subscribers:
-            # 샘플 가입자
-            subscribers = ["한국통신", "서울은행", "현대보험", "온라인마트"]
-            logger.info(f"[Pipeline] 샘플 가입자 사용: {subscribers}")
+            if args.allow_sample_data:
+                subscribers = ["한국통신", "서울은행", "현대보험", "온라인마트"]
+                logger.info(f"[Pipeline] 샘플 가입자 사용: {subscribers}")
+            else:
+                parser.error(
+                    f"{doc_root} 아래에 가입자 문서가 없습니다. "
+                    "--allow-sample-data 옵션으로 샘플 실행을 사용할 수 있습니다."
+                )
     else:
         subscribers = [args.subscriber]
 

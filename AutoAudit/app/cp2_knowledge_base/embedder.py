@@ -13,9 +13,11 @@ Sparse 검색  : BM25 (rank_bm25)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -65,6 +67,7 @@ class DualEmbedder:
 
     COLLECTION_SUFFIX = "_children"   # 자식 청크 컬렉션 (검색용)
     PARENT_SUFFIX     = "_parents"    # 부모 청크 컬렉션 (컨텍스트용)
+    HASH_EMBED_DIM    = 128           # 초경량 로컬 fallback 임베딩 차원
 
     def __init__(
         self,
@@ -72,6 +75,7 @@ class DualEmbedder:
         persist_dir: str = "./data/chroma_db",
         openai_api_key: str = None,
         embedding_model: str = "text-embedding-3-large",
+        local_embedding_model: str = "all-MiniLM-L6-v2",
         batch_size: int = 100,
     ):
         self.subscriber      = subscriber
@@ -79,7 +83,16 @@ class DualEmbedder:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.api_key         = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.embedding_model = embedding_model
+        self.local_embedding_model = local_embedding_model
         self.batch_size      = batch_size
+        self._collection_base = self._sanitize_collection_base(subscriber)
+        self._local_encoder = None
+        self._local_embed_announced = False
+
+        if self._collection_base != subscriber:
+            logger.info(
+                f"[CP2] 컬렉션명 정규화: '{subscriber}' → '{self._collection_base}'"
+            )
 
         # BM25 내부 상태
         self._bm25_index = None
@@ -302,31 +315,89 @@ class DualEmbedder:
 
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
         """OpenAI 임베딩 API 호출"""
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=self.api_key)
-            response = client.embeddings.create(
-                model=self.embedding_model,
-                input=texts,
+        if self.api_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=self.api_key)
+                response = client.embeddings.create(
+                    model=self.embedding_model,
+                    input=texts,
+                )
+                return [item.embedding for item in response.data]
+            except ImportError:
+                logger.warning("[CP2] openai 미설치 — 로컬 임베딩 모델로 대체")
+            except Exception as e:
+                logger.warning(f"[CP2] OpenAI 임베딩 오류 — 로컬 모델로 대체: {e}")
+
+        if not self._local_embed_announced:
+            logger.info(
+                f"[CP2] 로컬 임베딩 사용: {self.local_embedding_model} "
+                "(OPENAI_API_KEY 미설정 또는 OpenAI 호출 실패)"
             )
-            return [item.embedding for item in response.data]
-        except ImportError:
-            logger.error("[CP2] openai 미설치: pip install openai")
-            # 더미 임베딩 (개발/테스트용)
-            import random
-            return [[random.gauss(0, 0.1) for _ in range(1536)] for _ in texts]
+            self._local_embed_announced = True
+
+        return self._embed_texts_local(texts)
+
+    def _embed_texts_local(self, texts: List[str]) -> List[List[float]]:
+        """로컬 sentence-transformers 모델로 임베딩."""
+        try:
+            model = self._get_local_encoder()
+            embeddings = model.encode(
+                texts,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            return [embedding.tolist() for embedding in embeddings]
         except Exception as e:
-            logger.error(f"[CP2] 임베딩 오류: {e}")
-            import random
-            return [[random.gauss(0, 0.1) for _ in range(1536)] for _ in texts]
+            logger.warning(
+                f"[CP2] 로컬 임베딩 모델 로드 실패 — 해시 기반 fallback 사용: {e}"
+            )
+            return self._embed_texts_hash(texts)
+
+    def _get_local_encoder(self):
+        """로컬 임베딩 모델 lazy load."""
+        if self._local_encoder is not None:
+            return self._local_encoder
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._local_encoder = SentenceTransformer(self.local_embedding_model)
+            return self._local_encoder
+        except ImportError as e:
+            raise RuntimeError(
+                "sentence-transformers 패키지가 설치되어 있지 않습니다."
+            ) from e
+
+    def _embed_texts_hash(self, texts: List[str]) -> List[List[float]]:
+        """외부 모델 없이도 동작하는 결정적 해시 임베딩."""
+        return [self._hash_embed_text(text) for text in texts]
+
+    def _hash_embed_text(self, text: str) -> List[float]:
+        vector = [0.0] * self.HASH_EMBED_DIM
+        tokens = self._tokenize(text)
+
+        for token in tokens:
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            primary_idx = int.from_bytes(digest[:4], "big") % self.HASH_EMBED_DIM
+            secondary_idx = int.from_bytes(digest[4:8], "big") % self.HASH_EMBED_DIM
+            sign = 1.0 if digest[8] % 2 == 0 else -1.0
+            weight = 1.0 + min(len(token), 12) / 12.0
+
+            vector[primary_idx] += sign * weight
+            vector[secondary_idx] -= sign * 0.5
+
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            return vector
+        return [round(value / norm, 8) for value in vector]
 
     def _get_child_collection(self, reset: bool = False):
         """자식 청크 컬렉션 반환 (lazy init)"""
-        return self._get_collection(self.subscriber + self.COLLECTION_SUFFIX, reset)
+        return self._get_collection(self._collection_base + self.COLLECTION_SUFFIX, reset)
 
     def _get_parent_collection(self, reset: bool = False):
         """부모 청크 컬렉션 반환 (lazy init)"""
-        return self._get_collection(self.subscriber + self.PARENT_SUFFIX, reset)
+        return self._get_collection(self._collection_base + self.PARENT_SUFFIX, reset)
 
     def _get_collection(self, name: str, reset: bool = False):
         """ChromaDB 컬렉션 가져오기"""
@@ -341,6 +412,7 @@ class DualEmbedder:
         return self._chroma_client.get_or_create_collection(
             name=name,
             metadata={"hnsw:space": "cosine"},
+            embedding_function=None,
         )
 
     def _chroma_to_results(self, chroma_result: dict) -> List[SearchResult]:
@@ -413,6 +485,23 @@ class DualEmbedder:
         # 공백/특수문자 분리, 2글자 이상만 유지
         tokens = re.findall(r"[가-힣]{2,}|[a-zA-Z]{2,}|\d+", text.lower())
         return tokens if tokens else ["<empty>"]
+
+    @staticmethod
+    def _sanitize_collection_base(subscriber: str) -> str:
+        """Chroma 제약에 맞는 안전한 컬렉션명 베이스 생성."""
+        digest = hashlib.md5(subscriber.encode("utf-8")).hexdigest()[:8]
+        normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", subscriber.strip())
+        normalized = normalized.strip("._-")
+
+        if not normalized:
+            normalized = f"subscriber-{digest}"
+        elif normalized != subscriber:
+            normalized = f"{normalized}-{digest}"
+
+        normalized = normalized[:500].strip("._-")
+        if len(normalized) < 3:
+            normalized = f"sub-{digest}"
+        return normalized
 
     def __repr__(self) -> str:
         return f"DualEmbedder(subscriber={self.subscriber!r}, model={self.embedding_model!r})"

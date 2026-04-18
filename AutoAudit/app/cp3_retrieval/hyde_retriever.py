@@ -88,6 +88,10 @@ class HyDERetriever:
 
     def _generate_hypothetical(self, query: str) -> Optional[str]:
         """LLM으로 가상 답변 생성"""
+        if not self.api_key:
+            logger.info("[CP3] ANTHROPIC_API_KEY 미설정 — HyDE 스킵")
+            return None
+
         prompt = self.HYDE_PROMPT.format(
             subscriber=self.subscriber,
             query=query,
@@ -148,6 +152,10 @@ class MultiQueryExpander:
 
     def generate_variants(self, query: str) -> List[str]:
         """원본 쿼리 포함 변형 쿼리 목록 반환"""
+        if not self.api_key:
+            logger.info("[CP3] ANTHROPIC_API_KEY 미설정 — 원본 쿼리만 사용")
+            return [query]
+
         prompt = self.MULTI_QUERY_PROMPT.format(n=self.num_variants, query=query)
         try:
             import anthropic
@@ -174,6 +182,10 @@ class MultiQueryExpander:
         모든 변형 쿼리로 앙상블 검색 후 RRF 병합.
         """
         variants = self.generate_variants(query)
+        return self.search_with_variants(variants, top_k=top_k)
+
+    def search_with_variants(self, variants: List[str], top_k: int = 20) -> list:
+        """이미 생성된 변형 쿼리 목록으로 검색 실행."""
         all_results: dict[str, list] = {}  # chunk_id → [ranks]
 
         chunk_map: dict = {}
