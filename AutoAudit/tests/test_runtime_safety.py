@@ -10,6 +10,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.cp2_knowledge_base.embedder import DualEmbedder
+from app.cp3_retrieval.hyde_retriever import HyDERetriever
+from app.cp3_retrieval.query_builder import ConversationAwareQueryBuilder
+from app.cp3_retrieval.reranker import RetrievalPipeline
+from app.utils.config import load_config
 
 
 def _import_run_pipeline():
@@ -76,3 +80,62 @@ def test_run_subscriber_marks_partial_runs_completed(tmp_path, monkeypatch):
     assert result["status"] == "completed"
     assert result["checkpoints"]["cp1"]["status"] == "done"
     assert "elapsed_sec" in result
+
+
+def test_load_config_normalizes_placeholder_secrets(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx",
+                "ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxx",
+                "GOOGLE_API_KEY=AIzaSyxxxxxxxxxxxxxxxxxxxx",
+                "CONFLUENCE_TOKEN=xxxxxxxxxxxxxxxx",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("CONFLUENCE_TOKEN", raising=False)
+
+    config = load_config(str(env_file))
+
+    assert config["openai_api_key"] == ""
+    assert config["anthropic_api_key"] == ""
+    assert config["google_api_key"] == ""
+    assert config["confluence_token"] == ""
+
+
+def test_explicit_blank_keys_do_not_fall_back_to_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-live-real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-live")
+
+    embedder = DualEmbedder(
+        subscriber="테스트사",
+        persist_dir=str(tmp_path / "chroma"),
+        openai_api_key="",
+    )
+    hyde = HyDERetriever(
+        embedder=SimpleNamespace(subscriber="테스트사"),
+        anthropic_api_key="",
+    )
+    builder = ConversationAwareQueryBuilder(anthropic_api_key="")
+
+    assert embedder.api_key == ""
+    assert hyde.api_key == ""
+    assert builder.api_key == ""
+
+
+def test_retrieval_pipeline_explicit_blank_key_stays_blank(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-live")
+
+    pipeline = RetrievalPipeline(
+        embedder=SimpleNamespace(subscriber="테스트사"),
+        anthropic_api_key="",
+    )
+
+    assert pipeline.query_builder.api_key == ""
+    assert pipeline.hyde_retriever.api_key == ""
+    assert pipeline.multi_query_expander.api_key == ""

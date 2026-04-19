@@ -47,6 +47,39 @@ class ContextResult:
             parts.append(f"[참조 {i}] {text}")
         return "\n\n".join(parts)
 
+    @property
+    def grounding_signals(self) -> dict:
+        """검색 품질과 근거성 판단에 사용할 보조 신호."""
+        if not self.ranked_chunks:
+            return {
+                "top1_score": 0.0,
+                "score_gap": 0.0,
+                "retrieval_coverage": 0,
+                "source_diversity": 0.0,
+                "grounding_risk": "high",
+            }
+
+        top1 = float(self.ranked_chunks[0].score)
+        top2 = float(self.ranked_chunks[1].score) if len(self.ranked_chunks) > 1 else 0.0
+        score_gap = round(top1 - top2, 4)
+        doc_types = {chunk.doc_type for chunk in self.ranked_chunks if chunk.doc_type}
+        source_diversity = round(len(doc_types) / max(1, len(self.ranked_chunks)), 2)
+
+        if len(self.ranked_chunks) < 2 or top1 <= 0:
+            risk = "high"
+        elif score_gap < 0.03 and source_diversity < 0.35:
+            risk = "medium"
+        else:
+            risk = "low"
+
+        return {
+            "top1_score": round(top1, 4),
+            "score_gap": score_gap,
+            "retrieval_coverage": len(self.ranked_chunks),
+            "source_diversity": source_diversity,
+            "grounding_risk": risk,
+        }
+
     def to_dict(self) -> dict:
         return {
             "query":              self.query,
@@ -54,6 +87,7 @@ class ContextResult:
             "hypothetical_answer": self.hypothetical_answer,
             "query_variants":     self.query_variants,
             "context_text":       self.context_text,
+            "grounding_signals":  self.grounding_signals,
             "top_chunks": [
                 {**c.to_dict(), "parent_text": pt[:200] + "..." if pt and len(pt) > 200 else pt}
                 for c, pt in zip(self.ranked_chunks, self.parent_texts)
@@ -181,7 +215,7 @@ class RetrievalPipeline:
         from app.cp3_retrieval.query_builder import ConversationAwareQueryBuilder
         from app.cp3_retrieval.hyde_retriever import HyDERetriever, MultiQueryExpander
 
-        api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        api_key = os.getenv("ANTHROPIC_API_KEY", "") if anthropic_api_key is None else anthropic_api_key
         model   = claude_model or os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
 
         self.embedder        = embedder

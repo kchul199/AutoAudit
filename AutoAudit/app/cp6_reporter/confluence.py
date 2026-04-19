@@ -105,11 +105,12 @@ class ConfluenceReporter:
             f"""
             <tr>
               <td>{html.escape(item.get("source_file") or item["conv_id"])}</td>
+              <td>{html.escape(item.get("dominant_state", "-"))}</td>
               <td>{item["turn_count"]}</td>
-              <td>{item["avg_accuracy"]}</td>
-              <td>{item["avg_fluency"]}</td>
-              <td>{item["avg_overall"]}</td>
-              <td>{item["uncertain_count"]}</td>
+              <td>{item.get("trusted_turn_count", 0)}</td>
+              <td>{item.get("review_turn_count", 0)}</td>
+              <td>{item.get("avg_overall") if item.get("avg_overall") is not None else "-"}</td>
+              <td>{item.get("avg_operational_overall") if item.get("avg_operational_overall") is not None else "-"}</td>
             </tr>
             """
             for item in report["conversations"]
@@ -120,17 +121,19 @@ class ConfluenceReporter:
             for item in report["low_score_patterns"]
         ) or "<li>특이 패턴 없음</li>"
 
-        uncertain_rows = "\n".join(
+        review_rows = "\n".join(
             f"""
             <tr>
-              <td>{html.escape(item['conv_id'])}</td>
+              <td>{html.escape(item.get('source_file') or item['conv_id'])}</td>
+              <td>{html.escape(item['state'])}</td>
               <td>{item['turn_index']}</td>
               <td>{html.escape(item['user_query'][:80])}</td>
-              <td>{item['overall_mean']}</td>
+              <td>{item['overall_mean'] if item['overall_mean'] is not None else '-'}</td>
+              <td>{item['support_overall_mean'] if item['support_overall_mean'] is not None else '-'}</td>
             </tr>
             """
-            for item in report["uncertain_cases"]
-        ) or '<tr><td colspan="4">불확실 케이스 없음</td></tr>'
+            for item in report["review_queue"]
+        ) or '<tr><td colspan="6">검토 큐가 비어 있습니다.</td></tr>'
 
         summary = report["summary"]
         return f"""<!doctype html>
@@ -157,10 +160,30 @@ class ConfluenceReporter:
   <p class="muted">생성 시각: {html.escape(report['generated_at'])}</p>
 
   <div class="grid">
-    <div class="metric"><div class="label">평균 정확성</div><div class="value">{summary['avg_accuracy']}</div></div>
-    <div class="metric"><div class="label">평균 자연스러움</div><div class="value">{summary['avg_fluency']}</div></div>
-    <div class="metric"><div class="label">불확실 비율</div><div class="value">{round(summary['uncertain_ratio'] * 100, 1)}%</div></div>
+    <div class="metric"><div class="label">신뢰 평가율</div><div class="value">{round(summary['trusted_rate'] * 100, 1)}%</div></div>
+    <div class="metric"><div class="label">검토 큐</div><div class="value">{summary['review_queue_size']}</div></div>
+    <div class="metric"><div class="label">Degraded 비율</div><div class="value">{round(summary['degraded_ratio'] * 100, 1)}%</div></div>
+    <div class="metric"><div class="label">Incomplete 비율</div><div class="value">{round(summary['incomplete_ratio'] * 100, 1)}%</div></div>
   </div>
+
+  <h2>신뢰 가능한 운영 점수</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>정확성</th><th>자연스러움</th><th>근거성</th><th>정책 준수</th><th>과업 완결성</th><th>종합</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{summary.get('trusted_avg_accuracy') if summary.get('trusted_avg_accuracy') is not None else '-'}</td>
+        <td>{summary.get('trusted_avg_fluency') if summary.get('trusted_avg_fluency') is not None else '-'}</td>
+        <td>{summary.get('trusted_avg_groundedness') if summary.get('trusted_avg_groundedness') is not None else '-'}</td>
+        <td>{summary.get('trusted_avg_policy_compliance') if summary.get('trusted_avg_policy_compliance') is not None else '-'}</td>
+        <td>{summary.get('trusted_avg_task_completion') if summary.get('trusted_avg_task_completion') is not None else '-'}</td>
+        <td>{summary.get('trusted_avg_overall') if summary.get('trusted_avg_overall') is not None else '-'}</td>
+      </tr>
+    </tbody>
+  </table>
 
   <h2>점수 차트</h2>
   {chart_tags or "<p class='muted'>생성된 차트가 없습니다.</p>"}
@@ -169,7 +192,7 @@ class ConfluenceReporter:
   <table>
     <thead>
       <tr>
-        <th>대화</th><th>턴 수</th><th>정확성</th><th>자연스러움</th><th>종합</th><th>불확실</th>
+        <th>대화</th><th>상태</th><th>턴 수</th><th>TRUSTED 턴</th><th>검토 턴</th><th>TRUSTED 평균</th><th>운영 평균</th>
       </tr>
     </thead>
     <tbody>
@@ -180,13 +203,13 @@ class ConfluenceReporter:
   <h2>주요 낮은 점수 패턴</h2>
   <ul>{issue_rows}</ul>
 
-  <h2>불확실 케이스</h2>
+  <h2>검토 큐</h2>
   <table>
     <thead>
-      <tr><th>대화 ID</th><th>턴</th><th>질문</th><th>종합 점수</th></tr>
+      <tr><th>대화</th><th>상태</th><th>턴</th><th>질문</th><th>운영 점수</th><th>보조 점수</th></tr>
     </thead>
     <tbody>
-      {uncertain_rows}
+      {review_rows}
     </tbody>
   </table>
 </body>

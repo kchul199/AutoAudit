@@ -3,6 +3,33 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv  # pip install python-dotenv
 
+PLACEHOLDER_MARKERS = (
+    "xxxxxxxx",
+    "xxxxxx",
+    "your-",
+    "your_",
+    "replace",
+    "example",
+    "changeme",
+    "<api",
+    "<your",
+)
+
+
+def _normalize_secret(env_name: str, default: str = "") -> str:
+    value = os.getenv(env_name, default).strip()
+    if not value:
+        return ""
+
+    lowered = value.lower()
+    if lowered in {"none", "null", "changeme"}:
+        return ""
+    if any(marker in lowered for marker in PLACEHOLDER_MARKERS):
+        return ""
+    if value.endswith("..."):
+        return ""
+    return value
+
 
 def load_config(env_file: str = ".env") -> dict:
     """
@@ -14,9 +41,9 @@ def load_config(env_file: str = ".env") -> dict:
 
     return {
         # LLM API
-        "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
-        "openai_api_key":    os.getenv("OPENAI_API_KEY", ""),
-        "google_api_key":    os.getenv("GOOGLE_API_KEY", ""),
+        "anthropic_api_key": _normalize_secret("ANTHROPIC_API_KEY"),
+        "openai_api_key":    _normalize_secret("OPENAI_API_KEY"),
+        "google_api_key":    _normalize_secret("GOOGLE_API_KEY"),
 
         # Models
         "claude_model":  os.getenv("CLAUDE_MODEL",  "claude-opus-4-6"),
@@ -50,7 +77,7 @@ def load_config(env_file: str = ".env") -> dict:
         # Confluence
         "confluence_url":            os.getenv("CONFLUENCE_URL", ""),
         "confluence_email":          os.getenv("CONFLUENCE_EMAIL", ""),
-        "confluence_token":          os.getenv("CONFLUENCE_TOKEN", ""),
+        "confluence_token":          _normalize_secret("CONFLUENCE_TOKEN"),
         "confluence_space_key":      os.getenv("CONFLUENCE_SPACE_KEY", "CALLBOT"),
         "confluence_parent_page_id": os.getenv("CONFLUENCE_PARENT_PAGE_ID", ""),
     }

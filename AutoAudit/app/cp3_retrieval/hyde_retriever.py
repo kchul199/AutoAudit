@@ -57,7 +57,7 @@ class HyDERetriever:
         max_tokens: int = 512,
     ):
         self.embedder    = embedder
-        self.api_key     = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        self.api_key     = os.getenv("ANTHROPIC_API_KEY", "") if anthropic_api_key is None else anthropic_api_key
         self.model       = claude_model or os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
         self.subscriber  = subscriber or embedder.subscriber
         self.max_tokens  = max_tokens
@@ -145,7 +145,7 @@ class MultiQueryExpander:
         max_tokens: int = 512,
     ):
         self.embedder     = embedder
-        self.api_key      = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        self.api_key      = os.getenv("ANTHROPIC_API_KEY", "") if anthropic_api_key is None else anthropic_api_key
         self.model        = claude_model or os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
         self.num_variants = num_variants
         self.max_tokens   = max_tokens

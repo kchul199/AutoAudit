@@ -2,6 +2,7 @@
 
 from app.cp4_evaluator.consensus import ConsensusEvaluator, ConsensusScore
 from app.cp4_evaluator.judges import ClaudeJudge, GPTJudge, GeminiJudge, JudgeScore
+from app.cp4_evaluator.preflight import build_live_readiness
 
 __all__ = [
     "ClaudeJudge",
@@ -10,4 +11,5 @@ __all__ = [
     "JudgeScore",
     "ConsensusEvaluator",
     "ConsensusScore",
+    "build_live_readiness",
 ]

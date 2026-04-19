@@ -29,6 +29,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 # ── 경로 설정 ─────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -66,6 +67,13 @@ def _finalize_results(
     results["elapsed_sec"] = round(elapsed, 1)
     logger.info(f"[Pipeline] {subscriber} 완료: {elapsed:.1f}초")
     return results
+
+
+def _emit_progress(progress_callback: Callable[[dict], None] | None, results: dict) -> None:
+    if progress_callback is None:
+        return
+    snapshot = json.loads(json.dumps(results, ensure_ascii=False))
+    progress_callback(snapshot)
 
 
 def run_cp1(
@@ -316,7 +324,12 @@ def run_cp6(subscriber: str, report: dict, config: dict) -> dict:
 
 # ── 메인 실행기 ───────────────────────────────────────────────────
 
-def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> dict:
+def run_subscriber(
+    subscriber: str,
+    config: dict,
+    args: argparse.Namespace,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
     """단일 가입자 파이프라인 실행"""
     start_time = datetime.now()
     results = {"subscriber": subscriber, "status": "running", "checkpoints": {}}
@@ -336,6 +349,7 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
                 "conversations": len(conversations),
                 "docs": len(docs),
             }
+            _emit_progress(progress_callback, results)
         else:
             return _finalize_results(subscriber, results, start_time)
         if until == "cp1":
@@ -345,6 +359,7 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
         if CHECKPOINT_ORDER.index("cp2") <= CHECKPOINT_ORDER.index(until):
             embedder = run_cp2(subscriber, docs, config, force_reindex=args.reindex)
             results["checkpoints"]["cp2"] = {"status": "done", **embedder.index_stats()}
+            _emit_progress(progress_callback, results)
         else:
             return _finalize_results(subscriber, results, start_time)
         if until == "cp2":
@@ -357,18 +372,25 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
                 "status": "done",
                 "retrieval_count": len(retrieval_results),
             }
+            _emit_progress(progress_callback, results)
         else:
             return _finalize_results(subscriber, results, start_time)
         if until == "cp3":
             return _finalize_results(subscriber, results, start_time)
 
-        # CP4~CP6 (Phase 2~3에서 구현)
+        # CP4~CP6
         if CHECKPOINT_ORDER.index("cp4") <= CHECKPOINT_ORDER.index(until):
             cp4_results = run_cp4(subscriber, retrieval_results, config)
+            state_counts: dict[str, int] = {}
+            for item in cp4_results:
+                state = item.get("consensus", {}).get("state", "UNKNOWN")
+                state_counts[state] = state_counts.get(state, 0) + 1
             results["checkpoints"]["cp4"] = {
                 "status": "done",
                 "evaluated_turns": len(cp4_results),
+                "state_counts": state_counts,
             }
+            _emit_progress(progress_callback, results)
         else:
             return _finalize_results(subscriber, results, start_time)
         if until == "cp4":
@@ -379,8 +401,11 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
             results["checkpoints"]["cp5"] = {
                 "status": "done",
                 "conversations": report["summary"]["total_conversations"],
-                "avg_overall": report["summary"]["avg_overall"],
+                "trusted_avg_overall": report["summary"].get("trusted_avg_overall"),
+                "trusted_rate": report["summary"].get("trusted_rate"),
+                "review_queue_size": report["summary"].get("review_queue_size"),
             }
+            _emit_progress(progress_callback, results)
         else:
             return _finalize_results(subscriber, results, start_time)
         if until == "cp5":
@@ -393,6 +418,7 @@ def run_subscriber(subscriber: str, config: dict, args: argparse.Namespace) -> d
                 "local_report_path": publish_result["local_report_path"],
                 "confluence_page_id": publish_result.get("confluence_page_id"),
             }
+            _emit_progress(progress_callback, results)
         else:
             return _finalize_results(subscriber, results, start_time)
 

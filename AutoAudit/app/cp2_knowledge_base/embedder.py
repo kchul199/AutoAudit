@@ -81,7 +81,7 @@ class DualEmbedder:
         self.subscriber      = subscriber
         self.persist_dir     = Path(persist_dir) / subscriber
         self.persist_dir.mkdir(parents=True, exist_ok=True)
-        self.api_key         = openai_api_key or os.getenv("OPENAI_API_KEY", "")
+        self.api_key         = os.getenv("OPENAI_API_KEY", "") if openai_api_key is None else openai_api_key
         self.embedding_model = embedding_model
         self.local_embedding_model = local_embedding_model
         self.batch_size      = batch_size

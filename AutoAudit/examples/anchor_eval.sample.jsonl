@@ -1,0 +1,3 @@
+{"case_id":"anchor-001","user_query":"요금제 변경하고 싶은데요.","bot_answer":"앱의 마이페이지에서 요금제 변경 메뉴를 선택하시면 됩니다.","expected_doc_type":"faq","expected_terms":["요금제 변경","마이페이지"],"min_support_overall":2.5}
+{"case_id":"anchor-002","user_query":"인터넷이 자꾸 끊겨요.","bot_answer":"모뎀 전원을 껐다가 30초 후 다시 켜시고, 지속되면 원격 점검을 신청해 주세요.","expected_doc_type":"manual","expected_terms":["모뎀","원격 점검"],"expected_risk_flags":[],"min_support_overall":3.0}
+{"case_id":"anchor-003","user_query":"앱에서 하려면 어떻게 해요?","bot_answer":"마이페이지에서 요금제 변경 메뉴를 여시면 됩니다.","expected_terms":["마이페이지","요금제 변경"],"min_support_overall":2.5}
