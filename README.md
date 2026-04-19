@@ -46,7 +46,9 @@ RAG(Retrieval-Augmented Generation) 기반 SaaS 콜봇을 운영하면서 겪는
 
 - **실제 구현 범위**: `AutoAudit/` 아래 CP1~CP6 CLI 파이프라인 + FastAPI 서버 + `frontend/` Vite 앱
 - **보고서 출력**: 기본은 로컬 HTML 보고서 저장, Confluence 연동 정보가 있으면 베스트에포트 발행
+- **비동기 실행**: FastAPI에서 파이프라인과 앵커 eval을 background job으로 실행하고 폴링 가능
 - **UI 파일 상태**: `callbot_quality_ui.jsx`는 초기 시안이고, 실제 실행 가능한 화면은 `frontend/` 아래에 있습니다.
+- **운영 설계 문서**: 사람 최소 개입 + 3중 AI 신뢰 평가 설계는 [docs/trustworthy-human-minimal-eval-design.md](/Users/kchul199/Desktop/project/ax/docs/trustworthy-human-minimal-eval-design.md)에 정리했습니다.
 
 ---
 
@@ -162,6 +164,37 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 - `frontend/`는 실제 API 호출이 연결된 운영용 스캐폴드입니다.
 - `callbot_quality_ui.jsx`는 디자인/기획 참고용 목업 파일로 유지합니다.
 
+### 8. Docker 개발배포
+
+개발환경에 컨테이너로 올려 테스트하려면 아래 문서를 보세요.
+
+- [Dev Deployment Guide](/Users/kchul199/Desktop/project/ax/docs/dev-deployment.md)
+- smoke test 스크립트: [scripts/dev_smoke_test.sh](/Users/kchul199/Desktop/project/ax/scripts/dev_smoke_test.sh)
+
+### 9. 비동기 Job API
+
+```bash
+# 파이프라인 job 생성
+curl -X POST http://127.0.0.1:8000/api/pipeline/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"subscriber":"한국통신","until":"cp6","reindex":false,"allow_sample_data":false}'
+
+# job 상태 조회
+curl http://127.0.0.1:8000/api/pipeline/jobs/<job_id>
+```
+
+### 10. 앵커 Eval 실행
+
+작은 기준셋(JSONL)로 retrieval/judge 회귀를 돌릴 수 있습니다.
+
+```bash
+python3 AutoAudit/run_anchor_eval.py \
+  --subscriber 한국통신 \
+  --dataset AutoAudit/examples/anchor_eval.sample.jsonl
+```
+
+결과는 `data/results/<가입자명>/anchor_eval_report.json`에 저장됩니다.
+
 ---
 
 ## ⚙️ 환경 변수 (.env)
@@ -195,6 +228,14 @@ LOG_LEVEL=INFO
 UNCERTAINTY_THRESHOLD=1.5
 ```
 
+### Live Multi-LLM 합의 엔진
+
+- `OpenAI`: `openai` 2.x `Responses API`의 `responses.parse` + Pydantic schema로 구조화 점수를 강제합니다.
+- `Anthropic`: `messages.create` + 강제 tool schema로 동일한 judge schema만 받습니다.
+- `Gemini`: `google-genai` SDK의 JSON schema 응답으로 구조화 점수를 맞춥니다.
+- `TRUSTED` 운영 점수는 `3개 Judge 모두 live 성공`한 경우에만 생성됩니다.
+- `.env.example` 같은 placeholder 키나 누락 키는 자동으로 무시되며, 해당 턴은 `DEGRADED`로 내려가고 fallback 점수는 보조 정보로만 남습니다.
+
 ---
 
 ## 📊 평가 기준
@@ -203,19 +244,19 @@ UNCERTAINTY_THRESHOLD=1.5
 |------|------|------|
 | 정확성 | 0 ~ 5점 | 도메인 문서 기반 RAG 검색 결과와의 일치 여부 |
 | 자연스러움 | 0 ~ 5점 | 대화 흐름의 일관성 및 자연스러움 |
-| 합의 점수 | 가중 평균 | Claude(40%) + GPT-4o(35%) + Gemini(25%) |
-| 불확실 플래그 | 표준편차 > 1.5 | 3개 모델 간 점수 편차가 클 경우 수동 검토 권고 |
+| 합의 점수 | 3중 AI 평가 | 모든 bot turn을 Claude + GPT + Gemini가 1차부터 동시 평가 |
+| 신뢰 상태 | TRUSTED / UNCERTAIN / DEGRADED / INCOMPLETE | 3개 live Judge 성공 여부와 편차, grounding risk 기준으로 분기 |
 
 ---
 
-## 📅 구현 로드맵
+## 📅 구현 상태
 
-| Phase | 기간 | 내용 |
+| Phase | 상태 | 내용 |
 |-------|------|------|
-| Phase 1 | 1~2주차 | 데이터 파이프라인 (CP1~CP3) |
-| Phase 2 | 3~4주차 | Multi-LLM 평가 엔진 (CP4) |
-| Phase 3 | 5주차 | 집계 & 보고서 (CP5~CP6) |
-| Phase 4 | 6주차 | FastAPI + 운영 UI + 파일럿 검증 |
+| Phase 1 | 완료 | 데이터 파이프라인 (CP1~CP3) |
+| Phase 2 | 완료 | Multi-LLM 합의 평가 엔진 (CP4) |
+| Phase 3 | 완료 | 집계 & 보고서 (CP5~CP6) |
+| Phase 4 | 완료 | FastAPI + 운영 UI + 비동기 job + review queue |
 
 ---
 
@@ -223,8 +264,10 @@ UNCERTAINTY_THRESHOLD=1.5
 
 - **GT-Free 평가**: Ground Truth 없이 가입자 도메인 문서를 RAG 검색해 LLM Judge 프롬프트에 주입
 - **로컬 실행**: 콜봇 시스템과의 직접 API 연계 없이 파일 기반 I/O로만 동작
-- **정확도 우선**: 비용보다 정확도를 우선하여 최상위 모델(Claude Opus 4, GPT-4o, Gemini 1.5 Pro) 사용
-- **비동기 병렬**: `asyncio.gather()`로 3개 LLM 동시 호출 → 평가 시간 1/3 단축
+- **정확도 우선**: 비용보다 정확도를 우선하여 모든 평가 턴을 3개 AI Judge가 1차부터 병렬 평가
+- **신뢰도 보존**: 운영 점수는 3개 live Judge가 모두 성공한 경우에만 산출하고, fallback은 보조 정보로만 사용
+- **사람 최소 개입**: 사람은 전수 평가자가 아니라 `UNCERTAIN`, `DEGRADED`, `INCOMPLETE` 예외 큐만 검토
+- **비동기 병렬**: `asyncio.gather()`로 3개 LLM 동시 호출 → 정확도 유지와 처리시간 단축을 함께 추구
 - **Tenacity 재시도**: 지수 백오프로 API 오류 자동 복구
 
 ---
